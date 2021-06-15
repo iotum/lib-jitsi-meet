@@ -64,12 +64,12 @@
   },
   "scripts": {
     "lint": "eslint . && flow",
-    "postinstall": "webpack -p",
+    "build": "webpack -p",
     "test": "karma start karma.conf.js",
     "test-watch": "karma start karma.conf.js --no-single-run",
     "validate": "npm ls",
     "watch": "webpack --config webpack.config.js --watch --mode development"
   },
-  "main": "./index.js",
+  "main": "./lib-jitsi-meet.min.js",
   "license": "Apache-2.0"
 }

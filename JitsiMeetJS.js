@@ -588,6 +588,24 @@ export default _mergeNamespaceAndModule({
      * interest to lib-jitsi-meet clients.
      */
     util: {
+        // ICC: ability to create jitsi local tracks
+        RTC: {
+            /** @param {MediaStream} stream */
+            createTracksFromStream(stream, options = {}) {
+                return RTC.createLocalTracks(
+                    stream.getTracks().map(track => {
+                        return {
+                            sourceId: stream.id,
+                            sourceType: 'icc',
+                            stream,
+                            track,
+                            videoType: track.kind === 'video' && 'desktop',
+                            ...options
+                        };
+                    })
+                );
+            }
+        },
         AuthUtil,
         ScriptUtil,
         browser

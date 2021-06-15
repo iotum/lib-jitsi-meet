@@ -30,6 +30,7 @@ function calculatePacketLoss(lostPackets, totalPackets) {
  */
 function SsrcStats() {
     this.loss = {};
+    this.jitter = {};
     this.bitrate = {
         download: 0,
         upload: 0
@@ -45,6 +46,14 @@ function SsrcStats() {
  */
 SsrcStats.prototype.setLoss = function(loss) {
     this.loss = loss || {};
+};
+
+/**
+ * Sets the "jitter" object.
+ * @param jitter the value to set.
+ */
+SsrcStats.prototype.setJitter = function(jitter) {
+    Object.assign(this.jitter, jitter || {});
 };
 
 /**
@@ -79,7 +88,7 @@ SsrcStats.prototype.resetBitrate = function() {
  * @param framerate the value to set.
  */
 SsrcStats.prototype.setFramerate = function(framerate) {
-    this.framerate = framerate || 0;
+    this.framerate = framerate || this.framerate || 0;
 };
 
 SsrcStats.prototype.setCodec = function(codec) {
@@ -276,6 +285,7 @@ StatsCollector.prototype._processAndEmitReport = function() {
     const resolutions = {};
     const framerates = {};
     const codecs = {};
+    const jitters = {};
     let audioBitrateDownload = 0;
     let audioBitrateUpload = 0;
     let audioCodec;
@@ -312,7 +322,16 @@ StatsCollector.prototype._processAndEmitReport = function() {
             const participantId = track.getParticipantId();
 
             if (participantId) {
-                const resolution = ssrcStats.resolution;
+                const resolution = { ...ssrcStats.resolution };
+
+                if (!resolution.width && track.isLocal() && track.isVideoTrack()) {
+                    const { width, height } = track.getTrack().getSettings?.() || {};
+
+                    Object.assign(resolution, {
+                        width,
+                        height
+                    });
+                }
 
                 if (resolution.width
                         && resolution.height
@@ -329,7 +348,13 @@ StatsCollector.prototype._processAndEmitReport = function() {
                     userFramerates[ssrc] = ssrcStats.framerate;
                     framerates[participantId] = userFramerates;
                 }
-                if (audioCodec && videoCodec) {
+                if (Object.keys(ssrcStats.jitter).length) {
+                    const userJitters = jitters[participantId] || {};
+
+                    userJitters[ssrc] = ssrcStats.jitter;
+                    jitters[participantId] = userJitters;
+                }
+                if (audioCodec || videoCodec) {
                     const codecDesc = {
                         'audio': audioCodec,
                         'video': videoCodec
@@ -407,6 +432,7 @@ StatsCollector.prototype._processAndEmitReport = function() {
             'resolution': resolutions,
             'framerate': framerates,
             'codec': codecs,
+            'jitter': jitters,
             'transport': this.conferenceStats.transport,
             localAvgAudioLevels,
             avgAudioLevels
@@ -568,6 +594,17 @@ StatsCollector.prototype.processStatsReport = function() {
                 isDownloadStream
             });
 
+            // ICC: rtp jitter related
+            ssrcStats.setJitter({
+                'type': now.type,
+                'fir': now.firCount,
+                'pli': now.pliCount,
+                'nack': now.nackCount
+            });
+
+            // Firefox: use framerateMean
+            ssrcStats.setFramerate(Math.round(now.framerateMean || 0));
+
             // Get the resolution and framerate for only remote video sources here. For the local video sources,
             // 'track' stats will be used since they have the updated resolution based on the simulcast streams
             // currently being sent. Promise based getStats reports three 'outbound-rtp' streams and there will be
@@ -613,7 +650,11 @@ StatsCollector.prototype.processStatsReport = function() {
         // Use track stats for resolution and framerate of the local video source.
         // RTCVideoHandlerStats - https://w3c.github.io/webrtc-stats/#vststats-dict*
         // RTCMediaHandlerStats - https://w3c.github.io/webrtc-stats/#mststats-dict*
-        } else if (now.type === 'track' && now.kind === MediaType.VIDEO && !now.remoteSource) {
+        } else if (now.type === 'track' && !now.remoteSource) {
+            if (!(now.kind === MediaType.VIDEO || 'framesSent' in now)) {
+                return;
+            }
+
             const resolution = {
                 height: now.frameHeight,
                 width: now.frameWidth
@@ -667,6 +708,13 @@ StatsCollector.prototype.processStatsReport = function() {
             // Reset frame rate to 0 when video is suspended as a result of endpoint falling out of last-n.
             frameRate = numberOfActiveStreams ? Math.round(frameRate / numberOfActiveStreams) : 0;
             ssrcStats.setFramerate(frameRate);
+        } else if (now.type === 'remote-inbound-rtp' && now.localId) {
+            // Firefox: assume "candidate pair" has been processed.
+            const transport = this.conferenceStats.transport[0];
+
+            if (transport && now.roundTripTime) {
+                transport.rtt = now.roundTripTime * 1000;
+            }
         }
     });
 

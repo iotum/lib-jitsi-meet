@@ -292,6 +292,23 @@ export default function TraceablePeerConnection(
      */
     this.senderVideoMaxHeight = null;
 
+    // ICC: iosrtc stream sequence is out-of-sync with ICE state
+    this.pendingStreams = [];
+    const iosrtcAddStreams = () => {
+        if (this.signalingState === 'stable' && this.iceConnectionState === 'connected') {
+            // Iotum: add because ICE is ready
+            for (const streamId of this.pendingStreams) {
+                this.trace('onsignalingstatechange', streamId);
+                const stream = this.peerconnection.remoteStreams[streamId];
+
+                if (stream) {
+                    this._remoteStreamAdded(stream);
+                }
+            }
+            this.pendingStreams = [];
+        }
+    };
+
     // override as desired
     this.trace = (what, info) => {
         logger.debug(what, info);
@@ -325,8 +342,34 @@ export default function TraceablePeerConnection(
         };
         this.peerconnection.addEventListener('track', this.onTrack);
     } else {
-        this.peerconnection.onaddstream = event => this._remoteStreamAdded(event.stream);
-        this.peerconnection.onremovestream = event => this._remoteStreamRemoved(event.stream);
+        // this.peerconnection.onaddstream = event => this._remoteStreamAdded(event.stream);
+        // this.peerconnection.onremovestream = event => this._remoteStreamRemoved(event.stream);
+        this.peerconnection.onaddstream = event => {
+            this.trace('onaddstream',
+                `${this.iceConnectionState}, ${this.signalingState}: ${event.stream.id}`);
+            if (this.signalingState === 'have-remote-offer' && 'remoteStreams' in this.peerconnection) {
+                // ICC: iosrtc triggers add-stream before ICE is ready.
+                // We delay adding the stream.
+                this.pendingStreams.push(event.stream.id);
+            } else {
+                this._remoteStreamAdded(event.stream);
+            }
+        };
+        this.peerconnection.onremovestream = event => {
+            this.trace('onremovestream',
+                `${this.iceConnectionState}, ${this.signalingState}: ${event.stream.id}`);
+
+            // ICC: clean up if not yet added.
+            const idx = this.pendingStreams.findIndex(stream =>
+                stream === event.stream.id
+            );
+
+            if (idx === -1) {
+                this._remoteStreamRemoved(event.stream);
+            } else {
+                this.pendingStreams.splice(idx, 1);
+            }
+        };
     }
     this.onsignalingstatechange = null;
     this.peerconnection.onsignalingstatechange = event => {
@@ -334,12 +377,17 @@ export default function TraceablePeerConnection(
         if (this.onsignalingstatechange !== null) {
             this.onsignalingstatechange(event);
         }
+        iosrtcAddStreams();
     };
     this.oniceconnectionstatechange = null;
     this.peerconnection.oniceconnectionstatechange = event => {
         this.trace('oniceconnectionstatechange', this.iceConnectionState);
         if (this.oniceconnectionstatechange !== null) {
             this.oniceconnectionstatechange(event);
+        }
+        iosrtcAddStreams();
+        if (this.iceConnectionState === 'closed') {
+            this.pendingStreams = [];
         }
     };
     this.onnegotiationneeded = null;
