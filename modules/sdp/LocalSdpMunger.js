@@ -4,6 +4,7 @@ import { getLogger } from 'jitsi-meet-logger';
 
 import MediaDirection from '../../service/RTC/MediaDirection';
 import * as MediaType from '../../service/RTC/MediaType';
+import VideoType from '../../service/RTC/VideoType';
 
 import { SdpTransformWrap } from './SdpTransformUtil';
 
@@ -72,13 +73,14 @@ export default class LocalSdpMunger {
         for (const videoTrack of localVideos) {
             const muted = videoTrack.isMuted();
             const mediaStream = videoTrack.getOriginalStream();
+            const isCamera = videoTrack.videoType === VideoType.CAMERA;
 
             // During the mute/unmute operation there are periods of time when
             // the track's underlying MediaStream is not added yet to
             // the PeerConnection. The SDP needs to be munged in such case.
             const isInPeerConnection
                 = mediaStream && this.tpc.isMediaStreamInPc(mediaStream);
-            const shouldFakeSdp = muted || !isInPeerConnection;
+            const shouldFakeSdp = isCamera && (muted || !isInPeerConnection);
 
             if (!shouldFakeSdp) {
                 continue; // eslint-disable-line no-continue
@@ -218,21 +220,23 @@ export default class LocalSdpMunger {
             }
         }
 
+        // Additional transformations related to MSID are applicable to Unified-plan implementation only.
+        if (!this.tpc.usesUnifiedPlan()) {
+            return;
+        }
+
         // If the msid attribute is missing, then remove the ssrc from the transformed description so that a
         // source-remove is signaled to Jicofo. This happens when the direction of the transceiver (or m-line)
         // is set to 'inactive' or 'recvonly' on Firefox, Chrome (unified) and Safari.
-        const msid = mediaSection.ssrcs.find(s => s.attribute === 'msid');
+        const mediaDirection = mediaSection.mLine?.direction;
 
-        if (!this.tpc.isP2P
-            && (!msid
-                || mediaSection.mLine?.direction === MediaDirection.RECVONLY
-                || mediaSection.mLine?.direction === MediaDirection.INACTIVE)) {
+        if (mediaDirection === MediaDirection.RECVONLY || mediaDirection === MediaDirection.INACTIVE) {
             mediaSection.ssrcs = undefined;
             mediaSection.ssrcGroups = undefined;
 
-        // Add the msid attribute if it is missing for p2p sources. Firefox doesn't produce a a=ssrc line
-        // with msid attribute.
-        } else if (this.tpc.isP2P && mediaSection.mLine?.direction === MediaDirection.SENDRECV) {
+        // Add the msid attribute if it is missing when the direction is sendrecv/sendonly. Firefox doesn't produce a
+        // a=ssrc line with msid attribute for p2p connection.
+        } else {
             const msidLine = mediaSection.mLine?.msid;
             const trackId = msidLine && msidLine.split(' ')[1];
             const sources = [ ...new Set(mediaSection.mLine?.ssrcs?.map(s => s.id)) ];

@@ -1,4 +1,4 @@
-/* global __filename */
+/* global __filename, RTCRtpScriptTransform */
 
 import { getLogger } from 'jitsi-meet-logger';
 
@@ -74,22 +74,23 @@ export default class E2EEcontext {
         }
         receiver[kJitsiE2EE] = true;
 
-        let receiverStreams;
+        if (window.RTCRtpScriptTransform) {
+            const options = {
+                operation: 'decode',
+                participantId
+            };
 
-        if (receiver.createEncodedStreams) {
-            receiverStreams = receiver.createEncodedStreams();
+            receiver.transform = new RTCRtpScriptTransform(this._worker, options);
         } else {
-            receiverStreams = kind === 'video' ? receiver.createEncodedVideoStreams()
-                : receiver.createEncodedAudioStreams();
-        }
+            const receiverStreams = receiver.createEncodedStreams();
 
-        this._worker.postMessage({
-            operation: 'decode',
-            readableStream: receiverStreams.readable || receiverStreams.readableStream,
-            writableStream: receiverStreams.writable || receiverStreams.writableStream,
-            participantId
-        }, [ receiverStreams.readable || receiverStreams.readableStream,
-            receiverStreams.writable || receiverStreams.writableStream ]);
+            this._worker.postMessage({
+                operation: 'decode',
+                readableStream: receiverStreams.readable,
+                writableStream: receiverStreams.writable,
+                participantId
+            }, [ receiverStreams.readable, receiverStreams.writable ]);
+        }
     }
 
     /**
@@ -106,22 +107,23 @@ export default class E2EEcontext {
         }
         sender[kJitsiE2EE] = true;
 
-        let senderStreams;
+        if (window.RTCRtpScriptTransform) {
+            const options = {
+                operation: 'encode',
+                participantId
+            };
 
-        if (sender.createEncodedStreams) {
-            senderStreams = sender.createEncodedStreams();
+            sender.transform = new RTCRtpScriptTransform(this._worker, options);
         } else {
-            senderStreams = kind === 'video' ? sender.createEncodedVideoStreams()
-                : sender.createEncodedAudioStreams();
-        }
+            const senderStreams = sender.createEncodedStreams();
 
-        this._worker.postMessage({
-            operation: 'encode',
-            readableStream: senderStreams.readable || senderStreams.readableStream,
-            writableStream: senderStreams.writable || senderStreams.writableStream,
-            participantId
-        }, [ senderStreams.readable || senderStreams.readableStream,
-            senderStreams.writable || senderStreams.writableStream ]);
+            this._worker.postMessage({
+                operation: 'encode',
+                readableStream: senderStreams.readable,
+                writableStream: senderStreams.writable,
+                participantId
+            }, [ senderStreams.readable, senderStreams.writable ]);
+        }
     }
 
     /**
