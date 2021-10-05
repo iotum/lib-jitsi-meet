@@ -361,6 +361,7 @@ class Context_Context {
     async _decryptFrame(
             encodedFrame,
             keyIndex,
+            initialKey = undefined,
             ratchetCount = 0) {
 
         const { encryptionKey } = this._cryptoKeyRing[keyIndex];
@@ -414,8 +415,17 @@ class Context_Context {
                 return await this._decryptFrame(
                     encodedFrame,
                     keyIndex,
+                    initialKey || this._cryptoKeyRing[this._currentKeyIndex],
                     ratchetCount + 1);
             }
+
+            /*
+               Since the key it is first send and only afterwards actually used for encrypting, there were
+               situations when the decrypting failed due to the fact that the received frame was not encrypted
+               yet and ratcheting, of course, did not solve the problem. So if we fail RATCHET_WINDOW_SIZE times,
+               we come back to the initial key.
+            */
+            this._setKeys(initialKey);
 
             // TODO: notify the application about error status.
         }
@@ -465,43 +475,6 @@ class Context_Context {
     }
 }
 
-// CONCATENATED MODULE: ./modules/e2ee/utils.js
-/**
- * Polyfill RTCEncoded(Audio|Video)Frame.getMetadata() (not available in M83, available M84+).
- * The polyfill can not be done on the prototype since its not exposed in workers. Instead,
- * it is done as another transformation to keep it separate.
- * TODO: remove when we decode to drop M83 support.
- */
-function polyFillEncodedFrameMetadata(encodedFrame, controller) {
-    if (!encodedFrame.getMetadata) {
-        encodedFrame.getMetadata = function() {
-            return {
-                // TODO: provide a more complete polyfill based on additionalData for video.
-                synchronizationSource: this.synchronizationSource,
-                contributingSources: this.contributingSources
-            };
-        };
-    }
-    controller.enqueue(encodedFrame);
-}
-
-/**
- * Compares two byteArrays for equality.
- */
-function isArrayEqual(a1, a2) {
-    if (a1.byteLength !== a2.byteLength) {
-        return false;
-    }
-    for (let i = 0; i < a1.byteLength; i++) {
-        if (a1[i] !== a2[i]) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-
 // CONCATENATED MODULE: ./modules/e2ee/Worker.js
 /* global TransformStream */
 /* eslint-disable no-bitwise */
@@ -510,53 +483,56 @@ function isArrayEqual(a1, a2) {
 
 
 
-
 const contexts = new Map(); // Map participant id => context
+
+/**
+ * Retrieves the participant {@code Context}, creating it if necessary.
+ *
+ * @param {string} participantId - The participant whose context we need.
+ * @returns {Object} The context.
+ */
+function getParticipantContext(participantId) {
+    if (!contexts.has(participantId)) {
+        contexts.set(participantId, new Context_Context(participantId));
+    }
+
+    return contexts.get(participantId);
+}
+
+/**
+ * Sets an encode / decode transform.
+ *
+ * @param {Object} context - The participant context where the transform will be applied.
+ * @param {string} operation - Encode / decode.
+ * @param {Object} readableStream - Readable stream part.
+ * @param {Object} writableStream - Writable stream part.
+ */
+function handleTransform(context, operation, readableStream, writableStream) {
+    if (operation === 'encode' || operation === 'decode') {
+        const transformFn = operation === 'encode' ? context.encodeFunction : context.decodeFunction;
+        const transformStream = new TransformStream({
+            transform: transformFn.bind(context)
+        });
+
+        readableStream
+            .pipeThrough(transformStream)
+            .pipeTo(writableStream);
+    } else {
+        console.error(`Invalid operation: ${operation}`);
+    }
+}
 
 onmessage = async event => {
     const { operation } = event.data;
 
-    if (operation === 'encode') {
+    if (operation === 'encode' || operation === 'decode') {
         const { readableStream, writableStream, participantId } = event.data;
+        const context = getParticipantContext(participantId);
 
-        if (!contexts.has(participantId)) {
-            contexts.set(participantId, new Context_Context(participantId));
-        }
-        const context = contexts.get(participantId);
-        const transformStream = new TransformStream({
-            transform: context.encodeFunction.bind(context)
-        });
-
-        readableStream
-            .pipeThrough(new TransformStream({
-                transform: polyFillEncodedFrameMetadata // M83 polyfill.
-            }))
-            .pipeThrough(transformStream)
-            .pipeTo(writableStream);
-    } else if (operation === 'decode') {
-        const { readableStream, writableStream, participantId } = event.data;
-
-        if (!contexts.has(participantId)) {
-            contexts.set(participantId, new Context_Context(participantId));
-        }
-        const context = contexts.get(participantId);
-        const transformStream = new TransformStream({
-            transform: context.decodeFunction.bind(context)
-        });
-
-        readableStream
-            .pipeThrough(new TransformStream({
-                transform: polyFillEncodedFrameMetadata // M83 polyfill.
-            }))
-            .pipeThrough(transformStream)
-            .pipeTo(writableStream);
+        handleTransform(context, operation, readableStream, writableStream);
     } else if (operation === 'setKey') {
         const { participantId, key, keyIndex } = event.data;
-
-        if (!contexts.has(participantId)) {
-            contexts.set(participantId, new Context_Context(participantId));
-        }
-        const context = contexts.get(participantId);
+        const context = getParticipantContext(participantId);
 
         if (key) {
             context.setKey(key, keyIndex);
@@ -571,6 +547,17 @@ onmessage = async event => {
         console.error('e2ee worker', operation);
     }
 };
+
+// Operations using RTCRtpScriptTransform.
+if (self.RTCTransformEvent) {
+    self.onrtctransform = event => {
+        const transformer = event.transformer;
+        const { operation, participantId } = transformer.options;
+        const context = getParticipantContext(participantId);
+
+        handleTransform(context, operation, transformer.readable, transformer.writable);
+    };
+}
 
 
 /***/ })
