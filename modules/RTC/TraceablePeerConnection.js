@@ -930,6 +930,7 @@ TraceablePeerConnection.prototype._remoteTrackAdded = function(stream, track, tr
         ? new SDP(this.peerconnection.remoteDescription.sdp)
         : new SDP(this.remoteDescription.sdp);
     let mediaLines;
+    let _streamId = streamId;
 
     // In unified plan mode, find the matching mline using 'mid' if its availble, otherwise use the
     // 'msid' attribute of the stream.
@@ -947,6 +948,10 @@ TraceablePeerConnection.prototype._remoteTrackAdded = function(stream, track, tr
         }
     } else {
         mediaLines = remoteSDP.media.filter(mls => mls.startsWith(`m=${mediaType}`));
+
+        // ICC: iosrtc's streamId has extra uuid but msid line does not.
+        // Scoped to plan-b for only iosrtc
+        _streamId = streamId.split('_', 1)[0];
     }
 
     if (!mediaLines.length) {
@@ -960,7 +965,7 @@ TraceablePeerConnection.prototype._remoteTrackAdded = function(stream, track, tr
     let ssrcLines = SDPUtil.findLines(mediaLines[0], 'a=ssrc:');
 
     ssrcLines
-        = ssrcLines.filter(line => line.indexOf(`msid:${streamId}`) !== -1);
+        = ssrcLines.filter(line => line.indexOf(`msid:${_streamId}`) !== -1);
     if (!ssrcLines.length) {
         GlobalOnErrorHandler.callErrorHandler(
             new Error(`No SSRC lines found in remote SDP for remote stream[msid=${streamId},type=${mediaType}]`));

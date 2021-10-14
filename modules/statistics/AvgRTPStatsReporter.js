@@ -42,6 +42,10 @@ class AverageStatReport {
      */
     addNext(nextValue) {
         if (typeof nextValue !== 'number') {
+            // ICC
+            if (typeof nextValue === 'undefined') {
+                return;
+            }
             logger.error(
                 `${this.name} - invalid value for idx: ${this.count}`,
                 nextValue);
