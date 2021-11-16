@@ -105,7 +105,9 @@ const ScreenObtainer = {
             channelCount: 2,
             echoCancellation: false,
             noiseSuppression: false
-        } : true;
+        } : {
+          echoCancellation: true
+        };
 
         return audio;
     },
