@@ -1104,11 +1104,23 @@ JitsiConference.prototype._fireMuteChangeEvent = function(track) {
  * @returns {Array<JitsiLocalTrack>} - list of local tracks that are unmuted.
  */
 JitsiConference.prototype._getInitialLocalTracks = function() {
-    // Always add the audio track on mobile Safari because of a known issue where audio playout doesn't happen
-    // if the user joins audio and video muted.
+    // Always add the audio track on certain platforms:
+    //  * Safari / WebKit: because of a known issue where audio playout doesn't happen
+    //    if the user joins audio and video muted.
+    //  * React Native: after iOS 15, if a user joins muted they won't be able to unmute.
     return this.getLocalTracks()
-        .filter(track => (track.getType() === MediaType.AUDIO && (!this.isStartAudioMuted() || browser.isIosBrowser()))
-        || (track.getType() === MediaType.VIDEO && !this.isStartVideoMuted()));
+        .filter(track => {
+            const trackType = track.getType();
+
+            if (trackType === MediaType.AUDIO
+                    && (!this.isStartAudioMuted() || browser.isWebKitBased() || browser.isReactNative())) {
+                return true;
+            } else if (trackType === MediaType.VIDEO && !this.isStartVideoMuted()) {
+                return true;
+            }
+
+            return false;
+        });
 };
 
 /**
@@ -1753,41 +1765,32 @@ JitsiConference.prototype.onMemberLeft = function(jid) {
     }
 
     const participant = this.participants[id];
-
-    delete this.participants[id];
-
-    // Remove the ssrcs from the remote description.
     const mediaSessions = this._getMediaSessions();
-    const removePromises = [];
+    let tracksToBeRemoved = [];
 
     for (const session of mediaSessions) {
-        removePromises.push(session.removeRemoteStreamsOnLeave(id));
+        const remoteTracks = session.peerconnection.getRemoteTracks(id);
+
+        remoteTracks && (tracksToBeRemoved = [ ...tracksToBeRemoved, ...remoteTracks ]);
+
+        // Remove the ssrcs from the remote description and renegotiate.
+        session.removeRemoteStreamsOnLeave(id);
     }
 
-    Promise.allSettled(removePromises)
-        .then(results => {
-            let removedTracks = [];
+    // Fire the event before renegotiation is done so that the thumbnails can be removed immediately.
+    tracksToBeRemoved.forEach(track => {
+        this.eventEmitter.emit(JitsiConferenceEvents.TRACK_REMOVED, track);
+    });
 
-            results.map(result => result.value).forEach(value => {
-                if (value) {
-                    removedTracks = removedTracks.concat(value);
-                }
-            });
+    if (participant) {
+        delete this.participants[id];
+        this.eventEmitter.emit(JitsiConferenceEvents.USER_LEFT, id, participant);
+    }
 
-            removedTracks.forEach(track => {
-                this.eventEmitter.emit(JitsiConferenceEvents.TRACK_REMOVED, track);
-            });
-
-            // There can be no participant in case the member that left is focus.
-            if (participant) {
-                this.eventEmitter.emit(JitsiConferenceEvents.USER_LEFT, id, participant);
-            }
-
-            if (this.room !== null) { // Skip if we have left the room already.
-                this._maybeStartOrStopP2P(true /* triggered by user left event */);
-                this._maybeClearSITimeout();
-            }
-        });
+    if (this.room !== null) { // Skip if we have left the room already.
+        this._maybeStartOrStopP2P(true /* triggered by user left event */);
+        this._maybeClearSITimeout();
+    }
 };
 
 /* eslint-disable max-params */
@@ -2776,7 +2779,6 @@ JitsiConference.prototype.isConnectionInterrupted = function() {
  */
 JitsiConference.prototype._onConferenceRestarted = function(session) {
     if (!session.isP2P && this.options.config.enableForcedReload) {
-        this.restartInProgress = true;
         this.eventEmitter.emit(JitsiConferenceEvents.CONFERENCE_FAILED, JitsiConferenceErrors.CONFERENCE_RESTARTED);
     }
 };
