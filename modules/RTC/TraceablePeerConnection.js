@@ -2096,9 +2096,31 @@ TraceablePeerConnection.prototype.replaceTrack = function(oldTrack, newTrack) {
                 oldTrack && this.localTracks.delete(oldTrack.rtcId);
                 newTrack && this.localTracks.set(newTrack.rtcId, newTrack);
 
-                if (transceiver) {
-                    // Set the transceiver direction.
-                    transceiver.direction = newTrack ? MediaDirection.SENDRECV : MediaDirection.RECVONLY;
+                const mediaActive = mediaType === MediaType.AUDIO
+                    ? this.audioTransferActive
+                    : this.videoTransferActive;
+
+                // Set the transceiver direction only if media is not suspended on the connection. This happens when
+                // the client is using the p2p connection. Transceiver direction is updated when media is resumed on
+                // this connection again.
+                if (transceiver && mediaActive) {
+                    // In the scenario where we remove the oldTrack (oldTrack is not null and newTrack is null) on FF
+                    // if we change the direction to RECVONLY, create answer will generate SDP with only 1 receive
+                    // only ssrc instead of keeping all 6 ssrcs that we currently have. Stopping the screen sharing
+                    // and then starting it again will trigger 2 rounds of source-remove and source-add replacing
+                    // the 6 ssrcs for the screen sharing with 1 receive only ssrc and then removing the receive
+                    // only ssrc and adding the same 6 ssrcs. On the remote participant's side the same ssrcs will
+                    // be reused on a new m-line and if the remote participant is FF due to
+                    // https://bugzilla.mozilla.org/show_bug.cgi?id=1768729 the video stream won't be rendered.
+                    // That's why we need keep the direction to SENDRECV for FF.
+                    //
+                    // NOTE: If we return back to the approach of not removing the track for FF and instead using the
+                    // enabled property for mute or stopping screensharing we may need to change the direction to
+                    // RECVONLY if FF still sends the media even though the enabled flag is set to false.
+                    transceiver.direction
+                        = newTrack || browser.isFirefox() ? MediaDirection.SENDRECV : MediaDirection.RECVONLY;
+                } else if (transceiver) {
+                    transceiver.direction = MediaDirection.INACTIVE;
                 }
 
                 // Avoid configuring the encodings on Chromium/Safari until simulcast is configured
