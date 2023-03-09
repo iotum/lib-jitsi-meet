@@ -25,6 +25,12 @@ function _createSourceExtension(owner, sourceCompactJson) {
             name: 'msid',
             value: sourceCompactJson.m
         }).up();
+
+        // ICC: iosrtc needs cname
+        node.c('parameter', {
+            name: 'cname',
+            value: owner
+        }).up();
     }
     node.c('ssrc-info', {
         xmlns: 'http://jitsi.org/jitmeet',
