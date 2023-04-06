@@ -330,6 +330,44 @@ export default function TraceablePeerConnection(
      */
     this._localTrackTransceiverMids = new Map();
 
+    /**
+     * ICC
+     * - iosrtc stream sequence is out-of-sync with ICE state
+     * - safari 15 ontrack sequence is out-of-sync with ICE state
+     *
+     * @type {Array<[string, string]>}
+     */
+    this.pendingStreams = [];
+    const addPendingStreams = () => {
+        if (this.signalingState !== 'stable' || this.iceConnectionState !== 'connected') {
+            return;
+        }
+
+        // Iotum: add because ICE is ready
+        for (const [ streamId, transceiverMid ] of this.pendingStreams) {
+            this.trace('onsignalingstatechange', streamId);
+            if (transceiverMid) {
+                const transceiver = this.peerconnection.getTransceivers().find(
+                    ts => ts.mid === transceiverMid
+                );
+                const stream = this.peerconnection.getRemoteStreams().find(
+                    s => s.id === streamId
+                );
+
+                if (stream && transceiver) {
+                    this._remoteTrackAdded(stream, transceiver.receiver.track, transceiver);
+                }
+            } else {
+                const stream = this.peerconnection.remoteStreams[streamId];
+
+                if (stream) {
+                    this._remoteStreamAdded(stream);
+                }
+            }
+        }
+        this.pendingStreams = [];
+    };
+
     // override as desired
     this.trace = (what, info) => {
         logger.debug(what, info);
@@ -353,18 +391,63 @@ export default function TraceablePeerConnection(
 
     // Use track events when browser is running in unified plan mode and stream events in plan-b mode.
     if (this._usesUnifiedPlan) {
+        /** @param {RTCTrackEvent} evt */
         this.onTrack = evt => {
             const stream = evt.streams[0];
 
-            this._remoteTrackAdded(stream, evt.track, evt.transceiver);
+            // this._remoteTrackAdded(stream, evt.track, evt.transceiver);
+            this.trace('ontrack',
+                `${this.iceConnectionState}, ${this.signalingState}: ${stream.id}`);
+            if (this.signalingState === 'have-remote-offer') {
+                // ICC: safari 15 triggers ontrack before remoteDescription is set.
+                // We delay adding the track.
+                this.pendingStreams.push([ stream.id, evt.transceiver.mid ]);
+            } else {
+                this._remoteTrackAdded(stream, evt.track, evt.transceiver);
+            }
             stream.addEventListener('removetrack', e => {
-                this._remoteTrackRemoved(stream, e.track);
+                // this._remoteTrackRemoved(stream, e.track);
+                this.trace('onremovetrack',
+                    `${this.iceConnectionState}, ${this.signalingState}: ${stream.id}`);
+
+                // ICC: clean up if not yet added.
+                const idx = this.pendingStreams.findIndex(s => s[0] === stream.id);
+
+                if (idx === -1) {
+                    this._remoteTrackRemoved(stream, e.track);
+                } else {
+                    this.pendingStreams.splice(idx, 1);
+                }
             });
         };
         this.peerconnection.addEventListener('track', this.onTrack);
     } else {
-        this.peerconnection.onaddstream = event => this._remoteStreamAdded(event.stream);
-        this.peerconnection.onremovestream = event => this._remoteStreamRemoved(event.stream);
+        // this.peerconnection.onaddstream = event => this._remoteStreamAdded(event.stream);
+        // this.peerconnection.onremovestream = event => this._remoteStreamRemoved(event.stream);
+        this.peerconnection.onaddstream = event => {
+            this.trace('onaddstream',
+                `${this.iceConnectionState}, ${this.signalingState}: ${event.stream.id}`);
+            if (this.signalingState === 'have-remote-offer' && 'remoteStreams' in this.peerconnection) {
+                // ICC: iosrtc triggers add-stream before ICE is ready.
+                // We delay adding the stream.
+                this.pendingStreams.push([ event.stream.id ]);
+            } else {
+                this._remoteStreamAdded(event.stream);
+            }
+        };
+        this.peerconnection.onremovestream = event => {
+            this.trace('onremovestream',
+                `${this.iceConnectionState}, ${this.signalingState}: ${event.stream.id}`);
+
+            // ICC: clean up if not yet added.
+            const idx = this.pendingStreams.findIndex(s => s[0] === event.stream.id);
+
+            if (idx === -1) {
+                this._remoteStreamRemoved(event.stream);
+            } else {
+                this.pendingStreams.splice(idx, 1);
+            }
+        };
     }
     this.onsignalingstatechange = null;
     this.peerconnection.onsignalingstatechange = event => {
@@ -372,12 +455,17 @@ export default function TraceablePeerConnection(
         if (this.onsignalingstatechange !== null) {
             this.onsignalingstatechange(event);
         }
+        addPendingStreams();
     };
     this.oniceconnectionstatechange = null;
     this.peerconnection.oniceconnectionstatechange = event => {
         this.trace('oniceconnectionstatechange', this.iceConnectionState);
         if (this.oniceconnectionstatechange !== null) {
             this.oniceconnectionstatechange(event);
+        }
+        addPendingStreams();
+        if (this.iceConnectionState === 'closed') {
+            this.pendingStreams = [];
         }
     };
     this.onnegotiationneeded = null;
@@ -937,7 +1025,12 @@ TraceablePeerConnection.prototype._remoteTrackAdded = function(stream, track, tr
 
     let ssrcLines = SDPUtil.findLines(mediaLine, 'a=ssrc:');
 
-    ssrcLines = ssrcLines.filter(line => line.indexOf(`msid:${streamId}`) !== -1);
+    // ICC: iosrtc's streamId has extra uuid but msid line does not.
+    const _streamId = 'remoteStreams' in this.peerconnection
+        ? streamId.slice(0, streamId.lastIndexOf('_'))
+        : streamId;
+
+    ssrcLines = ssrcLines.filter(line => line.indexOf(`msid:${_streamId}`) !== -1);
     if (!ssrcLines.length) {
         GlobalOnErrorHandler.callErrorHandler(
             new Error(`No SSRC lines found in remote SDP for remote stream[msid=${streamId},type=${mediaType}]`
