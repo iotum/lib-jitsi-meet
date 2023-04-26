@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Target tag'
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '16.x'
+          cache: 'npm'
+      - run: npm ci
+      - name: Patch for release
+        run: |
+          sed -i 's/{#COMMIT_HASH#}/${{ inputs.tag }}/' JitsiMeetJS.ts
+          sed -i '/"module"/a\  "main": "dist/umd/lib-jitsi-meet.min.js",\n  "types": "types/auto/JitsiMeetJS.d.ts",' package.json
+      - name: Create bundle
+        run: |
+          npm pack
+          mv lib-jitsi-meet-0.0.0.tgz lib-jitsi-meet.tgz
+      - uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            lib-jitsi-meet.tgz
