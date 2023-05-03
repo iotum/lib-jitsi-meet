@@ -157,6 +157,7 @@ const ScreenObtainer = {
                             // working properly.
                             if (streamType === 'screen') {
                                 audioConstraints.mandatory = {
+                                    echoCancellation: true, // Ref: https://github.com/electron/electron/issues/27337
                                     chromeMediaSource: 'desktop'
                                 };
                             }
