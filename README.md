@@ -24,3 +24,16 @@ and to run unit tests:
 ```
 npm test
 ```
+
+## Branch release
+
+Build a prerelease from any branch with a custom tag:
+
+Push this branch before dispatching. Keep the `release.yml` filename, which is
+already registered on the default branch. `--ref release-workflow` selects this
+branch's workflow; `branch` selects the source to build. No merge into `master`
+is required.
+
+```
+gh workflow run release.yml --repo iotum/lib-jitsi-meet --ref release-workflow -f branch=<branch> -f tag=<tag>
+```
