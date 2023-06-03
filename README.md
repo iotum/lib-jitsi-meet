@@ -30,3 +30,9 @@ npm run build
 ```
 
 Both linting and units will also be done by a pre-commit hook.
+
+## Release
+
+```
+gh workflow run release.yml --ref release-workflow -f branch=<branch> -f tag=<tag>
+```

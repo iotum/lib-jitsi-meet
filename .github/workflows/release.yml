@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Target branch'
+        required: true
+        type: string
+      tag:
+        description: 'Target tag'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The branch, tag or SHA to checkout. When checking out the repository that
+          # triggered a workflow, this defaults to the reference or SHA for that event.
+          # Otherwise, uses the default branch.
+          ref: ${{ inputs.branch }}
+          # Whether to fetch tags, even if fetch-depth > 0.
+          # Default: false
+          fetch-tags: true
+
+      - name: Real SHA
+        run: |
+          # Workaround due to https://github.com/rickstaa/action-create-tag/issues/36
+          echo "GITHUB_SHA=$(git log -1 --format='%H')" >> "$GITHUB_ENV"
+
+      - name: Setup node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16.x'
+          cache: 'npm'
+
+      - name: Build & Bundle
+        run: |
+          npm ci
+          sed -i 's/{#COMMIT_HASH#}/${{ inputs.tag }}/' JitsiMeetJS.ts
+          npm pack
+          mv lib-jitsi-meet-0.0.0.tgz lib-jitsi-meet.tgz
+
+      - name: Create Tag
+        run: |
+          git config --global user.name "${{ github.actor }}"
+          git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag -f -a ${{ inputs.tag }} -m "Release ${{ inputs.tag }}"
+          git push -f origin ${{ inputs.tag }}
+
+      - uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.tag }}
+          prerelease: true
+          fail_on_unmatched_files: true
+          files: |
+            lib-jitsi-meet.tgz
