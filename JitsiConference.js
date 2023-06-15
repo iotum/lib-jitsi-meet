@@ -3935,8 +3935,8 @@ JitsiConference.prototype.isE2EESupported = function() {
  * @returns {void}
  */
 JitsiConference.prototype.toggleE2EE = function(enabled) {
-    if (!this.isE2EESupported()) {
-        logger.warn('Cannot enable / disable E2EE: platform is not supported.');
+    if (!this.isE2EESupported() && enabled) {
+        logger.warn('Cannot enable E2EE: platform is not supported.');
 
         return;
     }
