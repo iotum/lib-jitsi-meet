@@ -558,6 +558,23 @@ export default {
      * interest to lib-jitsi-meet clients.
      */
     util: {
+        // ICC: ability to create jitsi local tracks
+        RTC: {
+            createTracksFromStream(stream: MediaStream, options = {}) {
+                return RTC.createLocalTracks(
+                    stream.getTracks().map(track => {
+                        return {
+                            sourceId: stream.id,
+                            sourceType: 'icc',
+                            stream,
+                            track,
+                            videoType: track.kind === 'video' && 'desktop',
+                            ...options
+                        };
+                    })
+                );
+            }
+        },
         ScriptUtil,
         browser
     }
