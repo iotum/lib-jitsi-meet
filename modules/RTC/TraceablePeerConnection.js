@@ -321,6 +321,44 @@ export default function TraceablePeerConnection(
      */
     this._localTrackTransceiverMids = new Map();
 
+    /**
+     * ICC
+     * - iosrtc stream sequence is out-of-sync with ICE state
+     * - safari 15 ontrack sequence is out-of-sync with ICE state
+     *
+     * @type {Array<[string, string]>}
+     */
+    this._pendingStreams = [];
+    this._addPendingStreams = () => {
+        if (this.signalingState !== 'stable' || this.iceConnectionState !== 'connected') {
+            return;
+        }
+
+        // ICC: add because ICE is ready
+        for (const [ streamId, transceiverMid ] of this._pendingStreams) {
+            this.trace('onsignalingstatechange', streamId);
+            if (transceiverMid) {
+                const transceiver = this.peerconnection.getTransceivers().find(
+                    ts => ts.mid === transceiverMid
+                );
+                const stream = this.peerconnection.getRemoteStreams().find(
+                    s => s.id === streamId
+                );
+
+                if (stream && transceiver) {
+                    this._remoteTrackAdded(stream, transceiver.receiver.track, transceiver);
+                }
+            } else {
+                const stream = this.peerconnection.remoteStreams[streamId];
+
+                if (stream) {
+                    this._remoteStreamAdded(stream);
+                }
+            }
+        }
+        this._pendingStreams = [];
+    };
+
     // override as desired
     this.trace = (what, info) => {
         logger.trace(what, info);
@@ -342,12 +380,31 @@ export default function TraceablePeerConnection(
         }
     };
 
+    /** @param {RTCTrackEvent} evt */
     this.onTrack = evt => {
         const stream = evt.streams[0];
 
-        this._remoteTrackAdded(stream, evt.track, evt.transceiver);
+        this.trace('ontrack',
+            `${this.iceConnectionState}, ${this.signalingState}: ${stream.id}`);
+        if (this.signalingState === 'have-remote-offer') {
+            // ICC: safari 15 triggers ontrack before remoteDescription is set.
+            // We delay adding the track.
+            this._pendingStreams.push([ stream.id, evt.transceiver.mid ]);
+        } else {
+            this._remoteTrackAdded(stream, evt.track, evt.transceiver);
+        }
         stream.addEventListener('removetrack', e => {
-            this._remoteTrackRemoved(stream, e.track);
+            this.trace('onremovetrack',
+                `${this.iceConnectionState}, ${this.signalingState}: ${stream.id}`);
+
+            // ICC: clean up if not yet added.
+            const idx = this._pendingStreams.findIndex(s => s[0] === stream.id);
+
+            if (idx === -1) {
+                this._remoteTrackRemoved(stream, e.track);
+            } else {
+                this._pendingStreams.splice(idx, 1);
+            }
         });
     };
     this.peerconnection.addEventListener('track', this.onTrack);
@@ -358,12 +415,17 @@ export default function TraceablePeerConnection(
         if (this.onsignalingstatechange !== null) {
             this.onsignalingstatechange(event);
         }
+        this._addPendingStreams();
     };
     this.oniceconnectionstatechange = null;
     this.peerconnection.oniceconnectionstatechange = event => {
         this.trace('oniceconnectionstatechange', this.iceConnectionState);
         if (this.oniceconnectionstatechange !== null) {
             this.oniceconnectionstatechange(event);
+        }
+        this._addPendingStreams();
+        if (this.iceConnectionState === 'closed') {
+            this._pendingStreams = [];
         }
     };
     this.onnegotiationneeded = null;
@@ -894,7 +956,12 @@ TraceablePeerConnection.prototype._remoteTrackAdded = function(stream, track, tr
 
     let ssrcLines = SDPUtil.findLines(mediaLine, 'a=ssrc:');
 
-    ssrcLines = ssrcLines.filter(line => line.indexOf(`msid:${streamId}`) !== -1);
+    // ICC: iosrtc's streamId has extra uuid but msid line does not.
+    const _streamId = 'remoteStreams' in this.peerconnection
+        ? streamId.slice(0, streamId.lastIndexOf('_'))
+        : streamId;
+
+    ssrcLines = ssrcLines.filter(line => line.indexOf(`msid:${_streamId}`) !== -1);
     if (!ssrcLines.length) {
         logger.error(`No SSRC lines found in remote SDP for remote stream[msid=${streamId},type=${mediaType}]`
                 + 'track creation failed!');
