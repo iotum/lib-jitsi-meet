@@ -12,6 +12,9 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -33,9 +36,9 @@ jobs:
           echo "GITHUB_SHA=$(git log -1 --format='%H')" >> "$GITHUB_ENV"
 
       - name: Setup node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '16.x'
+          node-version: '18.x'
           cache: 'npm'
 
       - name: Build & Bundle
@@ -52,7 +55,7 @@ jobs:
           git tag -f -a ${{ inputs.tag }} -m "Release ${{ inputs.tag }}"
           git push -f origin ${{ inputs.tag }}
 
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
           prerelease: true
