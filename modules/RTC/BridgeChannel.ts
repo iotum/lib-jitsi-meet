@@ -333,10 +333,10 @@ export default class BridgeChannel {
             }
 
             case 'DominantSpeakerEndpointChangeEvent': {
-                const { dominantSpeakerEndpoint, previousSpeakers = [], silence } = obj;
+                const { dominantSpeakerEndpoint, previousSpeakers = [], silence, timestamp: t } = obj;
 
                 logger.debug(`Dominant speaker: ${dominantSpeakerEndpoint}, previous speakers: ${previousSpeakers}`);
-                emitter.emit(RTCEvents.DOMINANT_SPEAKER_CHANGED, dominantSpeakerEndpoint, previousSpeakers, silence);
+                emitter.emit(RTCEvents.DOMINANT_SPEAKER_CHANGED, dominantSpeakerEndpoint, previousSpeakers, silence, t);
                 break;
             }
             case 'EndpointConnectivityStatusChangeEvent': {

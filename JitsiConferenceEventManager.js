@@ -467,7 +467,7 @@ export default class JitsiConferenceEventManager {
             conference.onRemoteTrackRemoved.bind(conference));
 
         rtc.addListener(RTCEvents.DOMINANT_SPEAKER_CHANGED,
-            (dominant, previous, silence) => {
+            (dominant, previous, silence, timestamp) => {
                 if ((conference.lastDominantSpeaker !== dominant || conference.dominantSpeakerIsSilent !== silence)
                         && conference.room) {
                     conference.lastDominantSpeaker = dominant;
@@ -476,7 +476,7 @@ export default class JitsiConferenceEventManager {
                         JitsiConferenceEvents.DOMINANT_SPEAKER_CHANGED, dominant, previous, silence);
                     if (conference.statistics && conference.myUserId() === dominant) {
                         // We are the new dominant speaker.
-                        conference.xmpp.sendDominantSpeakerEvent(conference.room.roomjid, silence);
+                        conference.xmpp.sendDominantSpeakerEvent(conference.room.roomjid, silence, timestamp);
                     }
                     if (conference.lastDominantSpeaker !== dominant) {
                         if (previous && previous.length) {
