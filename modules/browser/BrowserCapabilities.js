@@ -21,6 +21,15 @@ const FROZEN_MACOS_VERSION = '10.15.7';
  */
 export default class BrowserCapabilities extends BrowserDetection {
     /**
+     * Checks if the browser is Chromium based.
+     *
+     * @returns {boolean}
+     */
+    isChromiumBased() {
+        return super.isChromiumBased() || Boolean(window.cordova?.plugins?.iosrtc);
+    }
+
+    /**
      * Tells whether or not the <tt>MediaStream/tt> is removed from the <tt>PeerConnection</tt> and disposed on video
      * mute (in order to turn off the camera device). This is needed on Firefox because of the following bug
      * https://bugzilla.mozilla.org/show_bug.cgi?id=1735951
