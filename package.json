@@ -28,7 +28,7 @@
     "lodash-es": "4.17.21",
     "patch-package": "6.5.1",
     "sdp-transform": "2.3.0",
-    "strophe.js": "1.5.0",
+    "strophe.js": "1.6.2",
     "strophejs-plugin-disco": "0.0.2",
     "strophejs-plugin-stream-management": "git+https://github.com/jitsi/strophejs-plugin-stream-management#679be5902097ed612fb5062b5549f3f32b6f5f47",
     "uuid": "8.1.0",
