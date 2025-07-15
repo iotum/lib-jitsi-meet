@@ -196,7 +196,7 @@ class ScreenObtainer {
             && !browser.isElectron();
         const needsEchoCancellation = !audioQuality?.stereo
             && browser.isChromiumBased()
-            && browser.isEngineVersionGreaterThan(136)
+            && (browser.isElectron() || browser.isEngineVersionGreaterThan(136))
             && !supportsRestrictOwnAudio;
 
         const defaultAudioConstraints: IAudioQuality = {
