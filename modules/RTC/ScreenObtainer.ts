@@ -69,6 +69,7 @@ interface IAudioConstraints {
     mandatory?: {
         chromeMediaSource?: string;
         chromeMediaSourceId?: string;
+        echoCancellation?: boolean;
     };
     optional?: {
         autoGainControl?: boolean;
@@ -315,6 +316,7 @@ class ScreenObtainer {
                             // working properly.
                             if (streamType === 'screen') {
                                 (audioConstraints as IAudioConstraints).mandatory = {
+                                    echoCancellation: true, // Ref: https://github.com/electron/electron/issues/27337
                                     chromeMediaSource: 'desktop'
                                 };
                             }
