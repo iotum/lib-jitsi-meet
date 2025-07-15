@@ -9,6 +9,17 @@ declare global {
             };
         };
         connectionTimes?: Record<string, any>;
+        cordova?: {
+            plugins?: {
+                iosrtc?: any;
+            };
+        };
+    }
+    interface RTCPeerConnection {
+        /** @deprecated iosrtc / legacy non-standard API */
+        getRemoteStreams?(): MediaStream[];
+        /** @deprecated iosrtc non-standard property: stream map keyed by stream id */
+        remoteStreams?: { [streamId: string]: MediaStream };
     }
     interface RTCRtpReceiver {
         createEncodedStreams?: () => {
