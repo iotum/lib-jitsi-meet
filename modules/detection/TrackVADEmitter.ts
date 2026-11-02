@@ -1,3 +1,5 @@
+import { getLogger } from '@jitsi/logger';
+
 import JitsiLocalTrack from '../RTC/JitsiLocalTrack';
 import RTC from '../RTC/RTC';
 import EventEmitter from '../util/EventEmitter';
@@ -7,8 +9,22 @@ import { DetectionEvents } from './DetectionEvents';
 
 export interface IVadProcessor {
     calculateAudioFrameVAD: (pcmSample: Float32Array | number[]) => number;
+    destroy?: () => void | Promise<void>;
     getRequiredPCMFrequency: () => number;
     getSampleLength: () => number;
+}
+
+const logger = getLogger('vad:TrackVADEmitter');
+
+/**
+ * Releases processors supporting disposal while remaining compatible with older implementations.
+ */
+export function destroyVADProcessor(processor: IVadProcessor): void {
+    try {
+        Promise.resolve(processor.destroy?.()).catch(error => logger.warn('Failed to destroy VAD processor', error));
+    } catch (error) {
+        logger.warn('Failed to destroy VAD processor', error);
+    }
 }
 
 export type AudioContextType = AudioContext;
@@ -21,19 +37,24 @@ export type MediaStreamAudioSourceNodeType = MediaStreamAudioSourceNode;
  * The PCM is processed by the injected vad module and a voice activity detection score is obtained, the
  * score is published to consumers via an EventEmitter.
  * After work is done with this service the destroy method needs to be called for a proper cleanup.
+ * Successful construction transfers processor ownership; direct construction borrows the track,
+ * whereas create() acquires and owns a separate VAD capture.
  *
  * @fires VAD_SCORE_PUBLISHED
  */
 export default class TrackVADEmitter extends EventEmitter {
     private _procNodeSampleRate: number;
-    private _vadProcessor: IVadProcessor;
-    private _localTrack: JitsiLocalTrack;
+    private _vadProcessor: Nullable<IVadProcessor>;
+    private _localTrack: Nullable<JitsiLocalTrack>;
     private _bufferResidue: Float32Array;
-    private _audioContext: AudioContextType;
+    private _audioContext: Nullable<AudioContextType>;
     private _vadSampleSize: number;
-    private _audioSource!: MediaStreamAudioSourceNodeType;
-    private _audioProcessingNode!: ScriptProcessorNodeType;
-    private _destroyed?: boolean;
+    private _audioSource?: MediaStreamAudioSourceNodeType;
+    private _audioProcessingNode?: ScriptProcessorNodeType;
+    private _destroyed = false;
+    private _running = false;
+    private _generation = 0;
+    private _ownsTrack = false;
 
     /**
      * Constructor.
@@ -42,8 +63,14 @@ export default class TrackVADEmitter extends EventEmitter {
      *  2048, 4096, 8192, 16384. Passing other values will default to closes neighbor.
      * @param {Object} vadProcessor - VAD processor that allows us to calculate VAD score for PCM samples.
      * @param {JitsiLocalTrack} jitsiLocalTrack - JitsiLocalTrack corresponding to micDeviceId.
+     * Direct construction borrows this track; it must never stop the published microphone.
+     * @param {boolean} ownsTrack - Whether the track was captured exclusively for VAD.
      */
-    constructor(procNodeSampleRate: number, vadProcessor: IVadProcessor, jitsiLocalTrack: JitsiLocalTrack) {
+    constructor(
+            procNodeSampleRate: number,
+            vadProcessor: IVadProcessor,
+            jitsiLocalTrack: JitsiLocalTrack,
+            ownsTrack = false) {
         super();
 
         /**
@@ -67,23 +94,23 @@ export default class TrackVADEmitter extends EventEmitter {
         this._bufferResidue = new Float32Array([]);
 
         /**
-         * The AudioContext instance with the preferred sample frequency.
-         */
-        this._audioContext = createAudioContext({ sampleRate: vadProcessor.getRequiredPCMFrequency() });
-
-        /**
-         * PCM Sample size expected by the VAD Processor instance. We cache it here as this value is used extensively,
-         * saves a couple of function calls.
-         */
-        this._vadSampleSize = vadProcessor.getSampleLength();
-
-        /**
          * Event listener function that will be called by the ScriptProcessNode with raw PCM data, depending on the set
          * sample rate.
          */
         this._onAudioProcess = this._onAudioProcess.bind(this);
 
-        this._initializeAudioContext();
+        try {
+            this._audioContext = createAudioContext({ sampleRate: vadProcessor.getRequiredPCMFrequency() });
+            if (!this._audioContext) {
+                throw new Error('Web Audio is unavailable for VAD');
+            }
+            this._vadSampleSize = vadProcessor.getSampleLength();
+            this._initializeAudioContext();
+            this._ownsTrack = ownsTrack;
+        } catch (error) {
+            this._cleanupResources();
+            throw error;
+        }
     }
 
     /**
@@ -96,6 +123,7 @@ export default class TrackVADEmitter extends EventEmitter {
      * - <tt>getSampleLength()</tt> - Returns the sample size accepted by getSampleLength.
      * - <tt>getRequiredPCMFrequency()</tt> - Returns the PCM frequency at which the processor operates.
      * - <tt>calculateAudioFrameVAD(pcmSample)</tt> - Process a 32 float pcm sample of getSampleLength size.
+     * Ownership of the processor transfers only on success. On rejection the caller must dispose it.
      * @returns {Promise<TrackVADEmitter>} - Promise resolving in a new instance of TrackVADEmitter.
      */
     static create(
@@ -112,10 +140,18 @@ export default class TrackVADEmitter extends EventEmitter {
                 throw new Error(`Failed to create jitsi local track for device id: ${micDeviceId}`);
             }
 
-            return new TrackVADEmitter(procNodeSampleRate, vadProcessor, localTrack[0]);
-
-            // We have no exception handling at this point as there is nothing to clean up, the vadProcessor
-            // life cycle is handled by whoever created this instance.
+            try {
+                return new TrackVADEmitter(procNodeSampleRate, vadProcessor, localTrack[0], true);
+            } catch (error) {
+                for (const track of localTrack) {
+                    try {
+                        track.stopStream();
+                    } catch (stopError) {
+                        logger.warn('Failed to stop VAD capture', stopError);
+                    }
+                }
+                throw error;
+            }
         });
     }
 
@@ -148,6 +184,11 @@ export default class TrackVADEmitter extends EventEmitter {
      * @fires VAD_SCORE_PUBLISHED
      */
     _onAudioProcess(audioEvent: AudioProcessingEvent): void {
+        if (this._destroyed || !this._running) {
+            return;
+        }
+        const generation = this._generation;
+
         // Prepend the residue PCM buffer from the previous process callback.
         const inData = audioEvent.inputBuffer.getChannelData(0);
         const completeInData = [ ...this._bufferResidue, ...inData ];
@@ -156,11 +197,17 @@ export default class TrackVADEmitter extends EventEmitter {
         let i = 0;
 
         for (; i + this._vadSampleSize < completeInData.length; i += this._vadSampleSize) {
+            if (this._destroyed || !this._running || generation !== this._generation) {
+                return;
+            }
             const pcmSample = completeInData.slice(i, i + this._vadSampleSize);
 
             // The VAD processor might change the values inside the array so we make a copy.
             const vadScore = this._vadProcessor.calculateAudioFrameVAD(pcmSample.slice());
 
+            if (this._destroyed || !this._running || generation !== this._generation) {
+                return;
+            }
             this.emit(DetectionEvents.VAD_SCORE_PUBLISHED, {
                 deviceId: this._localTrack.getDeviceId(),
                 pcmData: pcmSample,
@@ -169,7 +216,9 @@ export default class TrackVADEmitter extends EventEmitter {
             });
         }
 
-        this._bufferResidue = new Float32Array(completeInData.slice(i, completeInData.length));
+        if (!this._destroyed && this._running && generation === this._generation) {
+            this._bufferResidue = new Float32Array(completeInData.slice(i, completeInData.length));
+        }
     }
 
     /**
@@ -178,7 +227,13 @@ export default class TrackVADEmitter extends EventEmitter {
      * @returns {void}
      */
     _connectAudioGraph(): void {
-        this._audioProcessingNode.onaudioprocess = this._onAudioProcess;
+        const generation = ++this._generation;
+
+        this._audioProcessingNode.onaudioprocess = event => {
+            if (generation === this._generation) {
+                this._onAudioProcess(event);
+            }
+        };
         this._audioSource.connect(this._audioProcessingNode);
         this._audioProcessingNode.connect(this._audioContext.destination);
     }
@@ -189,12 +244,16 @@ export default class TrackVADEmitter extends EventEmitter {
      * @returns {void}
      */
     _disconnectAudioGraph(): void {
-        // Even thought we disconnect the processing node it seems that some callbacks remain queued,
-        // resulting in calls with and uninitialized context.
-        // eslint-disable-next-line  @typescript-eslint/no-empty-function
-        this._audioProcessingNode.onaudioprocess = () => {};
-        this._audioProcessingNode.disconnect();
-        this._audioSource.disconnect();
+        if (this._audioProcessingNode) {
+            this._audioProcessingNode.onaudioprocess = null;
+        }
+        for (const node of [ this._audioProcessingNode, this._audioSource ]) {
+            try {
+                node?.disconnect();
+            } catch (error) {
+                logger.warn('Failed to disconnect VAD audio node', error);
+            }
+        }
     }
 
     /**
@@ -204,7 +263,25 @@ export default class TrackVADEmitter extends EventEmitter {
      */
     _cleanupResources(): void {
         this._disconnectAudioGraph();
-        this._localTrack.stopStream();
+        if (this._ownsTrack) {
+            try {
+                this._localTrack?.stopStream();
+            } catch (error) {
+                logger.warn('Failed to stop VAD capture', error);
+            }
+        }
+        try {
+            if (this._audioContext && this._audioContext.state !== 'closed') {
+                this._audioContext.close().catch(error => logger.warn('Failed to close VAD AudioContext', error));
+            }
+        } catch (error) {
+            logger.warn('Failed to close VAD AudioContext', error);
+        }
+        this._audioProcessingNode = undefined;
+        this._audioSource = undefined;
+        this._localTrack = null;
+        this._audioContext = null;
+        this._bufferResidue = new Float32Array([]);
     }
 
     /**
@@ -213,7 +290,16 @@ export default class TrackVADEmitter extends EventEmitter {
      * @returns {void}
      */
     start(): void {
-        this._connectAudioGraph();
+        if (this._destroyed || this._running) {
+            return;
+        }
+        this._running = true;
+        try {
+            this._connectAudioGraph();
+        } catch (error) {
+            this.stop();
+            throw error;
+        }
     }
 
     /**
@@ -222,6 +308,8 @@ export default class TrackVADEmitter extends EventEmitter {
      * @returns {void}
      */
     stop(): void {
+        this._running = false;
+        ++this._generation;
         this._disconnectAudioGraph();
         this._bufferResidue = new Float32Array([]);
     }
@@ -236,7 +324,16 @@ export default class TrackVADEmitter extends EventEmitter {
             return;
         }
 
-        this._cleanupResources();
         this._destroyed = true;
+        this._running = false;
+        ++this._generation;
+        this._cleanupResources();
+        const processor = this._vadProcessor;
+
+        this._vadProcessor = null;
+        if (processor) {
+            destroyVADProcessor(processor);
+        }
+        this.removeAllListeners();
     }
 }
