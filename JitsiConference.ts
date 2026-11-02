@@ -361,7 +361,7 @@ export default class JitsiConference extends Listenable {
     private _videoSenderLimitReached?: boolean;
     private _firefoxP2pEnabled: boolean;
     private _iceRestarts: number;
-    private _unsubscribers: Array<() => void>;
+    private _localTrackUnsubscribers: Map<JitsiLocalTrack, Array<() => void>>;
     private _xmpp: XMPP;
 
     /**
@@ -608,7 +608,7 @@ export default class JitsiConference extends Listenable {
          * Number of times ICE restarts that have been attempted after ICE connectivity with the JVB was lost.
          */
         this._iceRestarts = 0;
-        this._unsubscribers = [];
+        this._localTrackUnsubscribers = new Map();
     }
 
     /**
@@ -1131,11 +1131,16 @@ export default class JitsiConference extends Listenable {
 
 
         // Add event handlers.
-        this._unsubscribers.push(newTrack.addCancellableListener(JitsiTrackEvents.TRACK_MUTE_CHANGED, this._fireMuteChangeEvent.bind(this, newTrack)));
+        const unsubscribers = [
+            newTrack.addCancellableListener(
+                JitsiTrackEvents.TRACK_MUTE_CHANGED, this._fireMuteChangeEvent.bind(this, newTrack))
+        ];
 
         if (newTrack.isAudioTrack()) {
-            this._unsubscribers.push(newTrack.addCancellableListener(JitsiTrackEvents.TRACK_AUDIO_LEVEL_CHANGED, this._fireAudioLevelChangeEvent.bind(this)));
+            unsubscribers.push(newTrack.addCancellableListener(
+                JitsiTrackEvents.TRACK_AUDIO_LEVEL_CHANGED, this._fireAudioLevelChangeEvent.bind(this)));
         }
+        this._localTrackUnsubscribers.set(newTrack, unsubscribers);
 
         this.eventEmitter.emit(JitsiConferenceEvents.TRACK_ADDED, newTrack);
     }
@@ -3596,8 +3601,8 @@ export default class JitsiConference extends Listenable {
     onLocalTrackRemoved(track: JitsiLocalTrack): void {
         track.setConference(null);
         this.rtc.removeLocalTrack(track);
-        this._unsubscribers.forEach(remove => remove());
-        this._unsubscribers = [];
+        this._localTrackUnsubscribers.get(track)?.forEach(remove => remove());
+        this._localTrackUnsubscribers.delete(track);
 
         this.eventEmitter.emit(JitsiConferenceEvents.TRACK_REMOVED, track);
     }
